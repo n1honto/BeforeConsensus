@@ -1,18 +1,38 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, font
+import hashlib
+import os
+import logging
+from datetime import datetime, timedelta
+import threading
+import time
+import random
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename='logs/app.log',
+    filemode='a'
+)
+logger = logging.getLogger(__name__)
+
+# Импорты из core
 from core.central_bank import CentralBank
 from core.financial_organization import FinancialOrganization
 from core.user import User
 from core.transaction import Transaction
 from core.wallet import Wallet
-import hashlib
-import os
-from datetime import datetime, timedelta
+
+# Импорты HotStuff
+from hotstuff_consensus.hotstuff import HotStuff
+from hotstuff_consensus.node import Node
+from hotstuff_consensus.block import Block
 
 class DigitalRubleApp:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Цифровой рубль — Симулятор")
+        self.root.title("Цифровой рубль — Симулятор с HotStuff консенсусом")
 
         # Увеличиваем шрифт по умолчанию
         default_font = font.nametofont("TkDefaultFont")
@@ -25,8 +45,12 @@ class DigitalRubleApp:
         self.style.configure("TCombobox", font=('Arial', 12))
         self.style.configure("TEntry", font=('Arial', 12))
 
+        # Создаём директории для логов и данных если их нет
+        os.makedirs('data', exist_ok=True)
+        os.makedirs('logs', exist_ok=True)
+
         # Очистка файла с хешами транзакций при запуске программы
-        with open("transaction_hashes.txt", "w", encoding="utf-8") as file:
+        with open("data/transaction_hashes.txt", "w", encoding="utf-8") as file:
             file.write("")
 
         # Инициализация системы
@@ -41,6 +65,10 @@ class DigitalRubleApp:
 
         # Пользователи
         self.users = {}
+
+        # Инициализация HotStuff консенсуса
+        self.hotstuff_nodes = [Node(i, is_leader=(i==0)) for i in range(4)]
+        self.hotstuff = HotStuff(self.hotstuff_nodes)
 
         # Создание вкладок
         self.notebook = ttk.Notebook(self.root)
@@ -66,6 +94,14 @@ class DigitalRubleApp:
         self.offline_process_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.offline_process_tab, text="Процессы оффлайн-транзакций")
 
+        # Вкладка для информации о блоках HotStuff
+        self.blocks_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.blocks_tab, text="Блоки HotStuff")
+
+        # Вкладка для визуализации консенсуса
+        self.consensus_visual_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.consensus_visual_tab, text="Визуализация консенсуса")
+
         # Виджеты на вкладке управления
         self.create_control_widgets()
 
@@ -81,7 +117,42 @@ class DigitalRubleApp:
         # Таблица процессов оффлайн-транзакций
         self.create_offline_process_table()
 
+        # Таблица блоков HotStuff
+        self.create_blocks_table()
+
+        # Визуализация консенсуса
+        self.create_consensus_visualization()
+
+        # Настройка минимального размера окна
+        self.root.minsize(1000, 700)
+
+        # Флаг для анимации консенсуса
+        self.consensus_animation_running = False
+        self.consensus_animation_thread = None
+
+    def _on_mousewheel(self, event):
+        """Обработчик прокрутки колесиком мыши"""
+        if hasattr(self, 'canvas'):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+    def _on_visual_mousewheel(self, event):
+        """Обработчик прокрутки колесиком мыши для канваса визуализации"""
+        if event.num == 5 or event.delta < 0:  # Прокрутка вниз или назад
+            self.visual_canvas.yview_scroll(1, "units")
+        elif event.num == 4 or event.delta > 0:  # Прокрутка вверх или вперед
+            self.visual_canvas.yview_scroll(-1, "units")
+        return "break"
+
+    def _on_state_mousewheel(self, event):
+        """Обработчик прокрутки колесиком мыши для вкладки текущего состояния"""
+        self.current_state_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+    def _on_history_mousewheel(self, event):
+        """Обработчик прокрутки колесиком мыши для вкладки истории блоков"""
+        self.block_history_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
     def create_control_widgets(self):
+        """Создаёт виджеты на вкладке управления"""
         # Блок для выбора банка
         self.bank_frame = ttk.LabelFrame(self.control_tab, text="Выбор банка")
         self.bank_frame.pack(padx=10, pady=10, fill="x")
@@ -240,7 +311,7 @@ class DigitalRubleApp:
         self.process_queue_button.pack(pady=20)
 
     def create_users_table(self):
-        # Создание таблицы пользователей
+        """Создаёт таблицу пользователей"""
         self.users_tree = ttk.Treeview(self.users_tab, columns=(
             "system_name", "type", "digital_wallet", "offline_wallet",
             "offline_wallet_balance", "cash_balance", "digital_balance",
@@ -268,17 +339,11 @@ class DigitalRubleApp:
 
         self.users_tree.pack(fill="both", expand=True)
 
-        # Добавление скроллбара
-        scrollbar = ttk.Scrollbar(self.users_tree, orient="vertical", command=self.users_tree.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.users_tree.configure(yscrollcommand=scrollbar.set)
-
     def create_cb_table(self):
-        # Метка для таблицы банков
+        """Создаёт таблицу ЦБ"""
         self.banks_label = ttk.Label(self.cb_tab, text="Балансы банков:", font=('Arial', 12, 'bold'))
         self.banks_label.pack(anchor="w", padx=10, pady=(10, 0))
 
-        # Создание таблицы банков
         self.banks_tree = ttk.Treeview(self.cb_tab, columns=("bank_name", "cash_balance", "digital_balance"), show="headings", height=10)
         self.banks_tree.heading("bank_name", text="Название банка")
         self.banks_tree.heading("cash_balance", text="Безналичный баланс (РУБ)")
@@ -288,11 +353,9 @@ class DigitalRubleApp:
         self.banks_tree.column("digital_balance", width=150)
         self.banks_tree.pack(fill="both", expand=True, pady=(0, 10))
 
-        # Метка для очереди транзакций
         self.queue_label = ttk.Label(self.cb_tab, text="Очередь транзакций на обработку:", font=('Arial', 12, 'bold'))
         self.queue_label.pack(anchor="w", padx=10, pady=(10, 0))
 
-        # Создание таблицы транзакций
         self.transactions_tree = ttk.Treeview(self.cb_tab, columns=("sender", "recipient", "amount", "bank", "status"), show="headings", height=10)
         self.transactions_tree.heading("sender", text="Отправитель")
         self.transactions_tree.heading("recipient", text="Получатель")
@@ -308,11 +371,9 @@ class DigitalRubleApp:
         self.transactions_tree.column("status", width=100)
         self.transactions_tree.pack(fill="both", expand=True, pady=(0, 10))
 
-        # Метка для хешей транзакций
         self.hash_label = ttk.Label(self.cb_tab, text="Хеши обработанных транзакций:", font=('Arial', 12, 'bold'))
         self.hash_label.pack(anchor="w", padx=10, pady=(10, 0))
 
-        # Создание таблицы хешей транзакций
         self.hash_tree = ttk.Treeview(self.cb_tab, columns=("hash",), show="headings", height=10)
         self.hash_tree.heading("hash", text="Хеш")
         self.hash_tree.heading("#0", text="ID транзакции")
@@ -320,16 +381,14 @@ class DigitalRubleApp:
         self.hash_tree.column("hash", width=400)
         self.hash_tree.pack(fill="both", expand=True, pady=(0, 0))
 
-        # Добавление метки для общего баланса ЦБ
         self.cb_balance_label = ttk.Label(self.cb_tab, text=f"Общий баланс цифровых рублей ЦБ: {self.cb.total_balance} ЦР", font=('Arial', 12))
         self.cb_balance_label.pack(pady=(10, 0))
 
     def create_offline_transactions_table(self):
-        # Метка для таблицы оффлайн-транзакций
+        """Создаёт таблицу оффлайн-транзакций"""
         self.offline_label = ttk.Label(self.offline_tab, text="Оффлайн-транзакции:", font=('Arial', 12, 'bold'))
         self.offline_label.pack(anchor="w", padx=10, pady=(10, 0))
 
-        # Создание таблицы оффлайн-транзакций
         self.offline_transactions_tree = ttk.Treeview(
             self.offline_tab,
             columns=("sender", "recipient", "amount", "transaction_time",
@@ -359,17 +418,11 @@ class DigitalRubleApp:
 
         self.offline_transactions_tree.pack(fill="both", expand=True, pady=(0, 10))
 
-        # Добавление скроллбара
-        scrollbar = ttk.Scrollbar(self.offline_transactions_tree, orient="vertical", command=self.offline_transactions_tree.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.offline_transactions_tree.configure(yscrollcommand=scrollbar.set)
-
     def create_offline_process_table(self):
-        # Метка для таблицы процессов оффлайн-транзакций
+        """Создаёт таблицу процессов оффлайн-транзакций"""
         self.offline_process_label = ttk.Label(self.offline_process_tab, text="Процессы оффлайн-транзакций:", font=('Arial', 12, 'bold'))
         self.offline_process_label.pack(anchor="w", padx=10, pady=(10, 0))
 
-        # Создание таблицы процессов оффлайн-транзакций
         self.offline_process_tree = ttk.Treeview(
             self.offline_process_tab,
             columns=("sender", "recipient", "amount", "action", "transaction_id", "status", "timestamp"),
@@ -395,12 +448,572 @@ class DigitalRubleApp:
 
         self.offline_process_tree.pack(fill="both", expand=True, pady=(0, 10))
 
-        # Добавление скроллбара
-        scrollbar = ttk.Scrollbar(self.offline_process_tree, orient="vertical", command=self.offline_process_tree.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.offline_process_tree.configure(yscrollcommand=scrollbar.set)
+    def create_blocks_table(self):
+        """Создаёт таблицу блоков HotStuff"""
+        self.blocks_label = ttk.Label(self.blocks_tab, text="Информация о блоках HotStuff:", font=('Arial', 12, 'bold'))
+        self.blocks_label.pack(anchor="w", padx=10, pady=(10, 0))
+
+        self.blocks_tree = ttk.Treeview(
+            self.blocks_tab,
+            columns=("height", "hash", "parent_hash", "tx_count", "timestamp", "status"),
+            show="headings",
+            height=20
+        )
+
+        self.blocks_tree.heading("height", text="Высота")
+        self.blocks_tree.heading("hash", text="Хеш блока")
+        self.blocks_tree.heading("parent_hash", text="Хеш родителя")
+        self.blocks_tree.heading("tx_count", text="Кол-во транзакций")
+        self.blocks_tree.heading("timestamp", text="Время создания")
+        self.blocks_tree.heading("status", text="Статус")
+
+        self.blocks_tree.column("height", width=80)
+        self.blocks_tree.column("hash", width=200)
+        self.blocks_tree.column("parent_hash", width=200)
+        self.blocks_tree.column("tx_count", width=100)
+        self.blocks_tree.column("timestamp", width=150)
+        self.blocks_tree.column("status", width=100)
+
+        self.blocks_tree.pack(fill="both", expand=True, pady=(0, 10))
+
+    def create_consensus_visualization(self):
+        """Создаёт визуализацию процесса консенсуса"""
+        # Основной фрейм для визуализации
+        self.visual_frame = ttk.LabelFrame(self.consensus_visual_tab, text="Визуализация консенсуса HotStuff")
+        self.visual_frame.pack(padx=10, pady=10, fill="both", expand=True)
+
+        # Канвас для рисования
+        self.visual_canvas = tk.Canvas(self.visual_frame, width=800, height=600, bg="white", highlightthickness=0)
+        self.visual_canvas.pack(fill="both", expand=True)
+
+        # Привязка колесика мыши к канвасу визуализации
+        self.visual_canvas.bind("<MouseWheel>", self._on_visual_mousewheel)
+        self.visual_canvas.bind("<Button-4>", self._on_visual_mousewheel)
+        self.visual_canvas.bind("<Button-5>", self._on_visual_mousewheel)
+
+        # Легенда
+        legend_frame = ttk.Frame(self.consensus_visual_tab)
+        legend_frame.pack(padx=10, pady=5, fill="x")
+
+        ttk.Label(legend_frame, text="Легенда:", font=('Arial', 10, 'bold')).pack(side="left", padx=5)
+        ttk.Label(legend_frame, text="🔴 - Лидер", foreground="red").pack(side="left", padx=10)
+        ttk.Label(legend_frame, text="🔵 - Узел", foreground="blue").pack(side="left", padx=10)
+        ttk.Label(legend_frame, text="🟢 - Голосование", foreground="green").pack(side="left", padx=10)
+        ttk.Label(legend_frame, text="🟣 - Предложение", foreground="purple").pack(side="left", padx=10)
+        ttk.Label(legend_frame, text="🔴 - Подтверждение", foreground="red").pack(side="left", padx=10)
+
+        # Кнопки управления
+        control_frame = ttk.Frame(self.consensus_visual_tab)
+        control_frame.pack(padx=10, pady=10, fill="x")
+
+        self.start_animation_button = ttk.Button(
+            control_frame,
+            text="🔄 Запустить анимацию консенсуса",
+            command=self.start_consensus_animation
+        )
+        self.start_animation_button.pack(side="left", padx=5, pady=5)
+
+        self.stop_animation_button = ttk.Button(
+            control_frame,
+            text="⏹ Остановить анимацию",
+            command=self.stop_consensus_animation,
+            state="disabled"
+        )
+        self.stop_animation_button.pack(side="left", padx=5, pady=5)
+
+        self.clear_canvas_button = ttk.Button(
+            control_frame,
+            text="🧹 Очистить",
+            command=self.clear_visual_canvas
+        )
+        self.clear_canvas_button.pack(side="left", padx=5, pady=5)
+
+        # Информационная панель с вкладками
+        self.info_notebook = ttk.Notebook(self.consensus_visual_tab)
+        self.info_notebook.pack(padx=10, pady=10, fill="both", expand=True)
+
+        # Вкладка с текущим состоянием
+        self.current_state_tab = ttk.Frame(self.info_notebook)
+        self.info_notebook.add(self.current_state_tab, text="Текущее состояние")
+
+        # Создаем контейнер с канвасом для скролла
+        self.current_state_container = ttk.Frame(self.current_state_tab)
+        self.current_state_container.pack(fill="both", expand=True)
+
+        self.current_state_canvas = tk.Canvas(self.current_state_container)
+        self.current_state_scrollbar = ttk.Scrollbar(self.current_state_container, orient="vertical", command=self.current_state_canvas.yview)
+        self.current_state_scrollable_frame = ttk.Frame(self.current_state_canvas)
+
+        self.current_state_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.current_state_canvas.configure(
+                scrollregion=self.current_state_canvas.bbox("all")
+            )
+        )
+
+        self.current_state_canvas.create_window((0, 0), window=self.current_state_scrollable_frame, anchor="nw")
+        self.current_state_canvas.configure(yscrollcommand=self.current_state_scrollbar.set)
+
+        self.current_state_canvas.pack(side="left", fill="both", expand=True)
+        self.current_state_scrollbar.pack(side="right", fill="y")
+
+        # Привязка колесика мыши
+        self.current_state_scrollable_frame.bind("<MouseWheel>", lambda event: self._on_state_mousewheel(event))
+        self.current_state_canvas.bind("<MouseWheel>", lambda event: self._on_state_mousewheel(event))
+
+        self.consensus_info = tk.StringVar()
+        self.consensus_info_label = ttk.Label(
+            self.current_state_scrollable_frame,
+            textvariable=self.consensus_info,
+            wraplength=700,
+            justify="left"
+        )
+        self.consensus_info_label.pack(padx=10, pady=10, fill="both", expand=True)
+
+        # Вкладка с историей блоков
+        self.block_history_tab = ttk.Frame(self.info_notebook)
+        self.info_notebook.add(self.block_history_tab, text="История блоков")
+
+        # Создаем контейнер с канвасом для скролла
+        self.block_history_container = ttk.Frame(self.block_history_tab)
+        self.block_history_container.pack(fill="both", expand=True)
+
+        self.block_history_canvas = tk.Canvas(self.block_history_container)
+        self.block_history_scrollbar = ttk.Scrollbar(self.block_history_container, orient="vertical", command=self.block_history_canvas.yview)
+        self.block_history_scrollable_frame = ttk.Frame(self.block_history_canvas)
+
+        self.block_history_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.block_history_canvas.configure(
+                scrollregion=self.block_history_canvas.bbox("all")
+            )
+        )
+
+        self.block_history_canvas.create_window((0, 0), window=self.block_history_scrollable_frame, anchor="nw")
+        self.block_history_canvas.configure(yscrollcommand=self.block_history_scrollbar.set)
+
+        self.block_history_canvas.pack(side="left", fill="both", expand=True)
+        self.block_history_scrollbar.pack(side="right", fill="y")
+
+        # Привязка колесика мыши
+        self.block_history_scrollable_frame.bind("<MouseWheel>", lambda event: self._on_history_mousewheel(event))
+        self.block_history_canvas.bind("<MouseWheel>", lambda event: self._on_history_mousewheel(event))
+
+        self.block_history_tree = ttk.Treeview(
+            self.block_history_scrollable_frame,
+            columns=("height", "hash", "tx_count", "timestamp"),
+            show="headings",
+            height=20
+        )
+
+        self.block_history_tree.heading("height", text="Высота")
+        self.block_history_tree.heading("hash", text="Хеш блока")
+        self.block_history_tree.heading("tx_count", text="Транзакций")
+        self.block_history_tree.heading("timestamp", text="Время создания")
+
+        self.block_history_tree.column("height", width=80)
+        self.block_history_tree.column("hash", width=200)
+        self.block_history_tree.column("tx_count", width=100)
+        self.block_history_tree.column("timestamp", width=150)
+
+        self.block_history_tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Начальные параметры визуализации
+        self.node_positions = {
+            0: (200, 150),  # Лидер
+            1: (500, 100),
+            2: (200, 300),
+            3: (500, 300)
+        }
+        self.node_colors = {
+            0: "#FF6B6B",  # Лидер - красный
+            1: "#4ECDC4",  # Узел 1 - бирюзовый
+            2: "#45B7D1",  # Узел 2 - голубой
+            3: "#FFA07A"   # Узел 3 - лососевый
+        }
+        self.node_radius = 40
+        self.connection_width = 2
+
+        # Рисуем начальное состояние
+        self.draw_consensus_network()
+
+        # Обновляем историю блоков
+        self.update_block_history()
+
+    def draw_consensus_network(self):
+        """Рисует сеть узлов консенсуса"""
+        self.visual_canvas.delete("all")
+
+        # Рисуем фон
+        self.visual_canvas.create_rectangle(0, 0, 800, 600, fill="#F8F9FA", outline="")
+
+        # Рисуем соединения между узлами
+        nodes = list(self.node_positions.keys())
+        for i in range(len(nodes)):
+            for j in range(i+1, len(nodes)):
+                x1, y1 = self.node_positions[nodes[i]]
+                x2, y2 = self.node_positions[nodes[j]]
+                self.visual_canvas.create_line(x1, y1, x2, y2, width=self.connection_width, fill="#E0E0E0", dash=(3, 3))
+
+        # Рисуем узлы
+        for node_id, pos in self.node_positions.items():
+            x, y = pos
+            color = self.node_colors[node_id]
+
+            # Основной круг узла
+            self.visual_canvas.create_oval(
+                x - self.node_radius, y - self.node_radius,
+                x + self.node_radius, y + self.node_radius,
+                fill=color, outline="#333333", width=2
+            )
+
+            # Внутренний круг для эффекта
+            self.visual_canvas.create_oval(
+                x - self.node_radius + 5, y - self.node_radius + 5,
+                x + self.node_radius - 5, y + self.node_radius - 5,
+                fill=color, outline="#333333", width=1
+            )
+
+            # Текст с номером узла
+            self.visual_canvas.create_text(x, y, text=f"Node {node_id}", fill="white", font=('Arial', 10, 'bold'))
+
+        # Подписываем лидера
+        leader_x, leader_y = self.node_positions[self.hotstuff.current_leader]
+        self.visual_canvas.create_text(
+            leader_x, leader_y - 50,
+            text="👑 ЛИДЕР", fill="#333333", font=('Arial', 12, 'bold')
+        )
+
+        # Рисуем легенду на канвасе
+        self.visual_canvas.create_text(400, 570, text="HotStuff Консенсус Визуализация", font=('Arial', 12, 'bold'), fill="#555555")
+
+        # Обновляем информационную панель
+        self.update_consensus_info()
+
+    def update_consensus_info(self):
+        """Обновляет информацию о текущем состоянии консенсуса"""
+        info = (
+            f"📊 ТЕКУЩЕЕ СОСТОЯНИЕ КОНСЕНСУСА HotStuff\n\n"
+            f"👑 Текущий лидер: Node {self.hotstuff.current_leader}\n"
+            f"🖥 Количество узлов: {len(self.hotstuff.nodes)}\n"
+            f"✅ Минимальный кворум: {((len(self.hotstuff.nodes) * 2) // 3) + 1} голосов\n"
+            f"📦 Высота цепочки: {len(self.hotstuff.blockchain)}\n"
+            f"⏳ Ожидающих блоков: {len(self.hotstuff.pending_blocks)}\n\n"
+            f"🔄 Последний блок: {len(self.hotstuff.blockchain) or 'нет'}\n"
+        )
+
+        if self.hotstuff.blockchain:
+            last_block = self.hotstuff.blockchain[-1]
+            info += (
+                f"   - Высота: {last_block.height}\n"
+                f"   - Хеш: {last_block.hash[:20]}...\n"
+                f"   - Время: {last_block.timestamp.strftime('%H:%M:%S')}\n"
+                f"   - Транзакций: {len(last_block.transactions)}\n"
+            )
+
+        self.consensus_info.set(info)
+        self.update_block_history()
+
+    def update_block_history(self):
+        """Обновляет историю блоков в визуализации"""
+        # Очистка таблицы
+        for item in self.block_history_tree.get_children():
+            self.block_history_tree.delete(item)
+
+        # Заполнение таблицы
+        for block in reversed(self.hotstuff.blockchain):  # Отображаем в обратном порядке (новые сверху)
+            self.block_history_tree.insert("", "end", values=(
+                block.height,
+                block.hash[:20] + "..." if block.hash else "N/A",
+                len(block.transactions),
+                block.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            ))
+
+    def start_consensus_animation(self):
+        """Запускает анимацию процесса консенсуса"""
+        if self.consensus_animation_running:
+            return
+
+        self.consensus_animation_running = True
+        self.start_animation_button.config(state="disabled")
+        self.stop_animation_button.config(state="normal")
+
+        # Запускаем анимацию в отдельном потоке
+        self.consensus_animation_thread = threading.Thread(
+            target=self.run_consensus_animation,
+            daemon=True
+        )
+        self.consensus_animation_thread.start()
+
+    def stop_consensus_animation(self):
+        """Останавливает анимацию процесса консенсуса"""
+        self.consensus_animation_running = False
+        self.start_animation_button.config(state="normal")
+        self.stop_animation_button.config(state="disabled")
+
+    def run_consensus_animation(self):
+        """Анимация процесса консенсуса"""
+        try:
+            # Симулируем несколько раундов консенсуса
+            for round_num in range(1, 6):
+                if not self.consensus_animation_running:
+                    break
+
+                # Обновляем информацию
+                self.visual_canvas.after(0, lambda: self.consensus_info.set(
+                    f"Раунд {round_num}: Начало процесса консенсуса\n"
+                    f"Текущий лидер: Node {self.hotstuff.current_leader}"
+                ))
+
+                # Анимация предложения блока
+                self.animate_proposal_phase(round_num)
+
+                # Анимация голосования
+                self.animate_voting_phase(round_num)
+
+                # Анимация подтверждения
+                self.animate_commit_phase(round_num)
+
+                # Ротация лидера
+                self.hotstuff.rotate_leader()
+                self.visual_canvas.after(0, self.draw_consensus_network)
+
+                # Пауза между раундами
+                time.sleep(2)
+
+        except Exception as e:
+            logger.error(f"Ошибка в анимации консенсуса: {str(e)}")
+        finally:
+            self.consensus_animation_running = False
+            self.visual_canvas.after(0, lambda: self.start_animation_button.config(state="normal"))
+            self.visual_canvas.after(0, lambda: self.stop_animation_button.config(state="disabled"))
+
+    def animate_proposal_phase(self, round_num: int):
+        """Анимация фазы предложения блока"""
+        leader_id = self.hotstuff.current_leader
+        leader_pos = self.node_positions[leader_id]
+
+        # Рисуем предложение блока
+        for node_id in self.node_positions:
+            if node_id == leader_id:
+                continue
+
+            target_pos = self.node_positions[node_id]
+
+            # Анимация отправки предложения
+            for i in range(5):
+                if not self.consensus_animation_running:
+                    return
+
+                # Рисуем линию от лидера к узлу
+                self.visual_canvas.after(0, lambda: self.visual_canvas.create_line(
+                    leader_pos[0], leader_pos[1],
+                    target_pos[0], target_pos[1],
+                    arrow=tk.LAST, fill="#9B59B6", width=2, tags=f"proposal_{round_num}"
+                ))
+
+                time.sleep(0.2)
+
+                # Удаляем линию
+                self.visual_canvas.after(0, lambda: self.visual_canvas.delete(f"proposal_{round_num}"))
+
+        # Обновляем информацию
+        self.visual_canvas.after(0, lambda: self.consensus_info.set(
+            self.consensus_info.get() + "\nЛидер отправил предложение блока всем узлам"
+        ))
+
+    def animate_voting_phase(self, round_num: int):
+        """Анимация фазы голосования"""
+        leader_id = self.hotstuff.current_leader
+
+        # Каждый узел отправляет голос лидеру
+        for node_id in self.node_positions:
+            if node_id == leader_id:
+                continue
+
+            node_pos = self.node_positions[node_id]
+            leader_pos = self.node_positions[leader_id]
+
+            # Анимация отправки голоса
+            for i in range(3):
+                if not self.consensus_animation_running:
+                    return
+
+                # Рисуем линию от узла к лидеру
+                self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.create_line(
+                    node_pos[0], node_pos[1],
+                    leader_pos[0], leader_pos[1],
+                    arrow=tk.LAST, fill="#27AE60", width=2, tags=f"vote_{round_num}_{n}"
+                ))
+
+                time.sleep(0.15)
+
+                # Удаляем линию
+                self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.delete(f"vote_{round_num}_{n}"))
+
+        # Обновляем информацию
+        self.visual_canvas.after(0, lambda: self.consensus_info.set(
+            self.consensus_info.get() + "\nУзлы отправили свои голоса лидеру"
+        ))
+
+    def animate_commit_phase(self, round_num: int):
+        """Анимация фазы подтверждения блока"""
+        leader_id = self.hotstuff.current_leader
+        leader_pos = self.node_positions[leader_id]
+
+        # Лидер отправляет подтверждение всем узлам
+        for node_id in self.node_positions:
+            if node_id == leader_id:
+                continue
+
+            target_pos = self.node_positions[node_id]
+
+            # Анимация отправки подтверждения
+            for i in range(3):
+                if not self.consensus_animation_running:
+                    return
+
+                # Рисуем линию от лидера к узлу
+                self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.create_line(
+                    leader_pos[0], leader_pos[1],
+                    target_pos[0], target_pos[1],
+                    arrow=tk.LAST, fill="#E74C3C", width=2, tags=f"commit_{round_num}_{n}"
+                ))
+
+                time.sleep(0.15)
+
+                # Удаляем линию
+                self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.delete(f"commit_{round_num}_{n}"))
+
+        # Обновляем информацию
+        self.visual_canvas.after(0, lambda: self.consensus_info.set(
+            self.consensus_info.get() + "\nЛидер подтвердил блок и отправил подтверждение всем узлам"
+        ))
+
+        # Добавляем блок в цепочку (симуляция)
+        self.visual_canvas.after(0, lambda: self.consensus_info.set(
+            self.consensus_info.get() + f"\nБлок #{len(self.hotstuff.blockchain)+1} добавлен в цепочку!"
+        ))
+
+    def clear_visual_canvas(self):
+        """Очищает канвас визуализации"""
+        self.visual_canvas.delete("all")
+        self.draw_consensus_network()
+
+    def on_consensus_state_changed(self):
+        """Обновляет визуализацию при изменении состояния консенсуса"""
+        self.visual_canvas.after(100, self.draw_consensus_network)
+        self.visual_canvas.after(100, self.update_consensus_info)
+
+    def sync_offline_transactions(self):
+        """Синхронизирует оффлайн-транзакции"""
+        processed_transactions = []
+
+        for user_id, user in self.users.items():
+            if user.wallet is not None and user.wallet.pending_transactions:
+                for transaction in user.wallet.pending_transactions:
+                    # Добавляем каждую транзакцию отдельно в очередь ЦБ
+                    self.cb.transaction_queue.append(transaction)
+
+                    # Обновляем таблицу процессов
+                    self.update_offline_process_table(
+                        transaction.sender_id,
+                        transaction.recipient_id,
+                        transaction.amount,
+                        "Синхронизация оффлайн-транзакции",
+                        transaction.id,
+                        "В очереди на обработку"
+                    )
+
+                    # Обновляем таблицу оффлайн-транзакций
+                    self.update_offline_transactions_table(transaction.id, "В очереди на обработку")
+
+                    processed_transactions.append(transaction)
+
+                # Очищаем список ожидающих транзакций после синхронизации
+                user.wallet.pending_transactions = []
+
+        if processed_transactions:
+            messagebox.showinfo("Успех", f"Синхронизировано {len(processed_transactions)} транзакций.\nОни добавлены в очередь на обработку.")
+            self.update_cb_table()
+        else:
+            messagebox.showinfo("Информация", "Нет транзакций для синхронизации.")
+
+    def process_queue(self):
+        """Обрабатывает очередь транзакций по одной транзакции в блоке"""
+        if not self.cb.transaction_queue:
+            messagebox.showinfo("Информация", "Очередь транзакций пуста.")
+            return
+
+        processed_count = 0
+        total_transactions = len(self.cb.transaction_queue)
+
+        while self.cb.transaction_queue:
+            # Берем первую транзакцию из очереди
+            transaction = self.cb.transaction_queue[0]
+
+            # Создаем блок с одной транзакцией
+            parent_hash = "genesis" if not self.hotstuff.blockchain else self.hotstuff.blockchain[-1].hash
+            new_block = Block(
+                height=len(self.hotstuff.blockchain) + 1,
+                transactions=[transaction],
+                parent_hash=parent_hash
+            )
+
+            # Предлагаем блок через HotStuff
+            self.hotstuff.propose_block(new_block)
+
+            # Симулируем процесс голосования
+            for node in self.hotstuff.nodes:
+                node.receive_proposal(new_block)
+
+            votes = sum(1 for node in self.hotstuff.nodes if node.vote(new_block))
+
+            # Проверяем кворум
+            if votes >= (len(self.hotstuff.nodes) * 2 // 3) + 1:
+                # Блок подтверждён - добавляем в цепочку
+                self.hotstuff.commit_block(new_block)
+
+                # Обновляем статус транзакции
+                transaction.status = "confirmed"
+
+                # Обновляем балансы пользователей
+                if transaction.sender_id in self.users:
+                    # Для онлайн-транзакций балансы уже обновлены при создании
+                    pass
+
+                if transaction.recipient_id in self.users and self.users[transaction.recipient_id].wallet:
+                    self.users[transaction.recipient_id].wallet.confirm_transaction(transaction.id, new_block.hash)
+
+                # Удаляем обработанную транзакцию из очереди
+                self.cb.transaction_queue.pop(0)
+
+                # Создаем хеш транзакции
+                transaction_hash = hashlib.sha256(
+                    f"{transaction.id}{transaction.sender_id}{transaction.recipient_id}{transaction.amount}{transaction.timestamp}".encode()
+                ).hexdigest()
+
+                # Записываем хеш в файл
+                with open("data/transaction_hashes.txt", "a", encoding="utf-8") as file:
+                    file.write(f"Транзакция: {transaction.id}, Хеш: {transaction_hash}\n")
+
+                processed_count += 1
+
+                # Обновляем интерфейс
+                self.update_cb_table([{"id": transaction.id, "hash": transaction_hash}])
+                self.update_blocks_table()
+                self.on_consensus_state_changed()
+            else:
+                messagebox.showwarning("Предупреждение", f"Консенсус не достигнут для транзакции {transaction.id}. Получено {votes} из {len(self.hotstuff.nodes)} голосов.")
+                break
+
+        if processed_count > 0:
+            messagebox.showinfo("Успех", f"Обработано {processed_count} из {total_transactions} транзакций.\nКаждая транзакция в отдельном блоке.")
+        else:
+            messagebox.showinfo("Информация", "Не удалось обработать транзакции.")
 
     def update_users_table(self):
+        """Обновляет таблицу пользователей"""
         # Очистка таблицы
         for item in self.users_tree.get_children():
             self.users_tree.delete(item)
@@ -430,6 +1043,7 @@ class DigitalRubleApp:
             ))
 
     def update_cb_table(self, transaction_hashes=None):
+        """Обновляет таблицу ЦБ"""
         # Очистка таблицы банков
         for item in self.banks_tree.get_children():
             self.banks_tree.delete(item)
@@ -464,6 +1078,7 @@ class DigitalRubleApp:
                     self.hash_tree.insert("", "end", text=hash_info["id"], values=(hash_info["hash"],))
 
     def update_offline_transactions_table(self, transaction_id=None, status=None):
+        """Обновляет таблицу оффлайн-транзакций"""
         if transaction_id and status:
             for item in self.offline_transactions_tree.get_children():
                 if self.offline_transactions_tree.item(item)["text"] == transaction_id:
@@ -491,16 +1106,33 @@ class DigitalRubleApp:
                             "Не обработана", action_time
                         ))
 
-    def update_offline_process_table(self, sender, recipient, amount, action, transaction_id, status):
+    def update_offline_process_table(self, sender: str, recipient: str, amount: float,
+                                    action: str, transaction_id: str, status: str):
+        """Обновляет таблицу процессов оффлайн-транзакций"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.offline_process_tree.insert("", "end", values=(
             sender, recipient, amount, action, transaction_id, status, timestamp
         ))
 
-    def get_selected_bank(self):
-        return self.banks[self.bank_combobox.get()]
+    def update_blocks_table(self):
+        """Обновляет таблицу блоков HotStuff"""
+        # Очистка таблицы
+        for item in self.blocks_tree.get_children():
+            self.blocks_tree.delete(item)
+
+        # Заполнение таблицы
+        for block in self.hotstuff.blockchain:
+            self.blocks_tree.insert("", "end", values=(
+                block.height,
+                block.hash[:20] + "..." if block.hash else "",
+                block.parent_hash[:20] + "..." if block.parent_hash else "",
+                len(block.transactions),
+                block.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                "Подтверждён"
+            ))
 
     def request_emission(self):
+        """Запрашивает эмиссию цифровых рублей"""
         bank = self.get_selected_bank()
         try:
             amount = float(self.emission_amount_entry.get())
@@ -518,7 +1150,12 @@ class DigitalRubleApp:
         except ValueError:
             messagebox.showerror("Ошибка", "Некорректная сумма.")
 
+    def get_selected_bank(self):
+        """Возвращает выбранный банк"""
+        return self.banks[self.bank_combobox.get()]
+
     def create_users(self):
+        """Создаёт новых пользователей"""
         try:
             count = int(self.user_count_entry.get())
             if count <= 0:
@@ -529,7 +1166,7 @@ class DigitalRubleApp:
                 user_id = f"{'legal_' if user_type == 'legal' else 'user'}{i}"
                 self.users[user_id] = User(user_id, user_type)
             self.update_users_table()
-            # Обновляем списки отправителей, получателей и пользователей для пополнения
+            # Обновляем списки отправителей, получателей и пользователей
             user_ids = list(self.users.keys())
             self.sender_combobox["values"] = user_ids
             self.recipient_combobox["values"] = user_ids
@@ -541,6 +1178,7 @@ class DigitalRubleApp:
             messagebox.showerror("Ошибка", "Некорректное количество пользователей.")
 
     def create_offline_wallet(self):
+        """Создаёт оффлайн-кошелёк для пользователя"""
         user_id = self.offline_wallet_user_combobox.get()
         if not user_id:
             messagebox.showerror("Ошибка", "Выберите пользователя.")
@@ -558,6 +1196,7 @@ class DigitalRubleApp:
         self.update_users_table()
 
     def topup_offline_wallet(self):
+        """Пополняет оффлайн-кошелёк"""
         user_id = self.offline_wallet_user_combobox.get()
         if not user_id:
             messagebox.showerror("Ошибка", "Выберите пользователя.")
@@ -590,6 +1229,7 @@ class DigitalRubleApp:
             messagebox.showerror("Ошибка", "Не удалось пополнить оффлайн-кошелёк.")
 
     def exchange_cash_to_digital(self):
+        """Обменивает безналичные рубли на цифровые"""
         user_id = self.exchange_user_combobox.get()
         bank = self.banks[self.exchange_bank_combobox.get()]
         if not user_id:
@@ -623,6 +1263,7 @@ class DigitalRubleApp:
             messagebox.showerror("Ошибка", "Не удалось выполнить обмен.")
 
     def create_online_transaction(self):
+        """Создаёт онлайн-транзакцию"""
         sender = self.sender_combobox.get()
         recipient = self.recipient_combobox.get()
         try:
@@ -654,6 +1295,7 @@ class DigitalRubleApp:
         messagebox.showinfo("Успех", f"Онлайн-транзакция {transaction.id} добавлена в очередь на обработку.")
 
     def create_offline_transaction(self):
+        """Создаёт оффлайн-транзакцию"""
         sender = self.offline_sender_combobox.get()
         recipient = self.offline_recipient_combobox.get()
         try:
@@ -690,62 +1332,3 @@ class DigitalRubleApp:
                 messagebox.showerror("Ошибка", "Не удалось добавить транзакцию в очередь.")
         else:
             messagebox.showerror("Ошибка", "Недостаточно средств на оффлайн-кошельке.")
-
-    def sync_offline_transactions(self):
-        for user_id, user in self.users.items():
-            if user.wallet is not None and user.wallet.pending_transactions:
-                for transaction in user.wallet.pending_transactions:
-                    # Добавляем транзакцию в очередь ЦБ
-                    bank = list(self.banks.values())[0]
-                    bank.add_transaction_to_queue(transaction)
-
-                    # Обновляем статус в таблице процессов
-                    self.update_offline_process_table(
-                        transaction.sender_id,
-                        transaction.recipient_id,
-                        transaction.amount,
-                        "Синхронизация оффлайн-транзакции",
-                        transaction.id,
-                        "Синхронизирована"
-                    )
-
-                    # Обновляем статус в таблице транзакций
-                    self.update_offline_transactions_table(transaction.id, "Обработана")
-
-                # Очищаем список ожидающих транзакций после синхронизации
-                user.wallet.pending_transactions = []
-
-                messagebox.showinfo("Успех", f"Оффлайн-транзакции пользователя {user_id} синхронизированы.")
-
-        self.update_cb_table()
-        self.update_users_table()
-
-    def process_queue(self):
-        if not self.cb.transaction_queue:
-            messagebox.showinfo("Информация", "Очередь транзакций пуста.")
-            return
-        transaction_hashes = []
-        for transaction in self.cb.transaction_queue:
-            transaction_hash = hashlib.sha256(f"{transaction.id}{transaction.sender_id}{transaction.recipient_id}{transaction.amount}{transaction.timestamp}".encode()).hexdigest()
-            transaction_hashes.append({"id": transaction.id, "hash": transaction_hash})
-
-            # Если это оффлайн-транзакция, обновляем балансы пользователей
-            if hasattr(transaction, 'is_offline') and transaction.is_offline:
-                if transaction.sender_id in self.users and transaction.recipient_id in self.users:
-                    self.users[transaction.recipient_id].digital_balance += transaction.amount
-
-        self.cb.transaction_queue.clear()
-        self.update_cb_table(transaction_hashes)
-        self.write_hashes_to_file(transaction_hashes)
-        messagebox.showinfo("Успех", "Очередь транзакций обработана. Хеши транзакций сохранены.")
-
-    def write_hashes_to_file(self, transaction_hashes):
-        """Запись хешей транзакций в файл."""
-        with open("transaction_hashes.txt", "a", encoding="utf-8") as file:
-            for hash_info in transaction_hashes:
-                file.write(f"Транзакция: {hash_info['id']}, Хеш: {hash_info['hash']}\n")
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = DigitalRubleApp(root)
-    root.mainloop()

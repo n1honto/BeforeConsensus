@@ -1,3 +1,4 @@
+# core/user.py
 from core.wallet import Wallet
 
 class User:
