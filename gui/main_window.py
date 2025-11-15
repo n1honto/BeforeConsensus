@@ -130,6 +130,7 @@ class DigitalRubleApp:
         self.consensus_animation_running = False
         self.consensus_animation_thread = None
 
+    # Вспомогательные методы для обработки событий мыши
     def _on_mousewheel(self, event):
         """Обработчик прокрутки колесиком мыши"""
         if hasattr(self, 'canvas'):
@@ -137,20 +138,40 @@ class DigitalRubleApp:
 
     def _on_visual_mousewheel(self, event):
         """Обработчик прокрутки колесиком мыши для канваса визуализации"""
-        if event.num == 5 or event.delta < 0:  # Прокрутка вниз или назад
+        if event.num == 5 or event.delta < 0:
             self.visual_canvas.yview_scroll(1, "units")
-        elif event.num == 4 or event.delta > 0:  # Прокрутка вверх или вперед
+        elif event.num == 4 or event.delta > 0:
             self.visual_canvas.yview_scroll(-1, "units")
         return "break"
 
     def _on_state_mousewheel(self, event):
         """Обработчик прокрутки колесиком мыши для вкладки текущего состояния"""
-        self.current_state_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        if hasattr(self, 'current_state_canvas'):
+            self.current_state_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
 
     def _on_history_mousewheel(self, event):
         """Обработчик прокрутки колесиком мыши для вкладки истории блоков"""
-        self.block_history_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        if hasattr(self, 'block_history_canvas'):
+            self.block_history_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
 
+    # Методы для работы с интерфейсом
+    def get_selected_bank(self):
+        """Возвращает выбранный банк"""
+        return self.banks[self.bank_combobox.get()]
+
+    def add_consensus_state(self, message):
+        """Добавляет сообщение о состоянии консенсуса в текстовое поле"""
+        if hasattr(self, 'consensus_state_text'):
+            self.consensus_state_text.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+            self.consensus_state_text.see(tk.END)
+            self.consensus_state_text.update()
+
+    def clear_consensus_states(self):
+        """Очищает все состояния консенсуса"""
+        if hasattr(self, 'consensus_state_text'):
+            self.consensus_state_text.delete(1.0, tk.END)
+
+    # Методы для создания интерфейса
     def create_control_widgets(self):
         """Создаёт виджеты на вкладке управления"""
         # Блок для выбора банка
@@ -536,39 +557,15 @@ class DigitalRubleApp:
         self.current_state_tab = ttk.Frame(self.info_notebook)
         self.info_notebook.add(self.current_state_tab, text="Текущее состояние")
 
-        # Создаем контейнер с канвасом для скролла
-        self.current_state_container = ttk.Frame(self.current_state_tab)
-        self.current_state_container.pack(fill="both", expand=True)
-
-        self.current_state_canvas = tk.Canvas(self.current_state_container)
-        self.current_state_scrollbar = ttk.Scrollbar(self.current_state_container, orient="vertical", command=self.current_state_canvas.yview)
-        self.current_state_scrollable_frame = ttk.Frame(self.current_state_canvas)
-
-        self.current_state_scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.current_state_canvas.configure(
-                scrollregion=self.current_state_canvas.bbox("all")
-            )
+        # Текстовое поле для отображения состояния консенсуса
+        self.consensus_state_text = tk.Text(
+            self.current_state_tab,
+            wrap=tk.WORD,
+            width=80,
+            height=20,
+            font=('Arial', 10)
         )
-
-        self.current_state_canvas.create_window((0, 0), window=self.current_state_scrollable_frame, anchor="nw")
-        self.current_state_canvas.configure(yscrollcommand=self.current_state_scrollbar.set)
-
-        self.current_state_canvas.pack(side="left", fill="both", expand=True)
-        self.current_state_scrollbar.pack(side="right", fill="y")
-
-        # Привязка колесика мыши
-        self.current_state_scrollable_frame.bind("<MouseWheel>", lambda event: self._on_state_mousewheel(event))
-        self.current_state_canvas.bind("<MouseWheel>", lambda event: self._on_state_mousewheel(event))
-
-        self.consensus_info = tk.StringVar()
-        self.consensus_info_label = ttk.Label(
-            self.current_state_scrollable_frame,
-            textvariable=self.consensus_info,
-            wraplength=700,
-            justify="left"
-        )
-        self.consensus_info_label.pack(padx=10, pady=10, fill="both", expand=True)
+        self.consensus_state_text.pack(padx=10, pady=10, fill="both", expand=True)
 
         # Вкладка с историей блоков
         self.block_history_tab = ttk.Frame(self.info_notebook)
@@ -594,10 +591,6 @@ class DigitalRubleApp:
 
         self.block_history_canvas.pack(side="left", fill="both", expand=True)
         self.block_history_scrollbar.pack(side="right", fill="y")
-
-        # Привязка колесика мыши
-        self.block_history_scrollable_frame.bind("<MouseWheel>", lambda event: self._on_history_mousewheel(event))
-        self.block_history_canvas.bind("<MouseWheel>", lambda event: self._on_history_mousewheel(event))
 
         self.block_history_tree = ttk.Treeview(
             self.block_history_scrollable_frame,
@@ -637,8 +630,12 @@ class DigitalRubleApp:
         # Рисуем начальное состояние
         self.draw_consensus_network()
 
-        # Обновляем историю блоков
-        self.update_block_history()
+        # Добавляем начальное состояние консенсуса
+        self.add_consensus_state("Инициализация консенсуса HotStuff")
+        self.add_consensus_state(f"Текущий лидер: Узел {self.hotstuff.current_leader}")
+        self.add_consensus_state(f"Количество узлов: {len(self.hotstuff.nodes)}")
+        self.add_consensus_state(f"Минимальный кворум: {((len(self.hotstuff.nodes) * 2) // 3) + 1} голосов")
+        self.add_consensus_state("Ожидание начала процесса консенсуса...\n")
 
     def draw_consensus_network(self):
         """Рисует сеть узлов консенсуса"""
@@ -687,47 +684,45 @@ class DigitalRubleApp:
         # Рисуем легенду на канвасе
         self.visual_canvas.create_text(400, 570, text="HotStuff Консенсус Визуализация", font=('Arial', 12, 'bold'), fill="#555555")
 
-        # Обновляем информационную панель
-        self.update_consensus_info()
-
     def update_consensus_info(self):
         """Обновляет информацию о текущем состоянии консенсуса"""
-        info = (
-            f"📊 ТЕКУЩЕЕ СОСТОЯНИЕ КОНСЕНСУСА HotStuff\n\n"
-            f"👑 Текущий лидер: Node {self.hotstuff.current_leader}\n"
-            f"🖥 Количество узлов: {len(self.hotstuff.nodes)}\n"
-            f"✅ Минимальный кворум: {((len(self.hotstuff.nodes) * 2) // 3) + 1} голосов\n"
-            f"📦 Высота цепочки: {len(self.hotstuff.blockchain)}\n"
-            f"⏳ Ожидающих блоков: {len(self.hotstuff.pending_blocks)}\n\n"
-            f"🔄 Последний блок: {len(self.hotstuff.blockchain) or 'нет'}\n"
-        )
-
-        if self.hotstuff.blockchain:
-            last_block = self.hotstuff.blockchain[-1]
-            info += (
-                f"   - Высота: {last_block.height}\n"
-                f"   - Хеш: {last_block.hash[:20]}...\n"
-                f"   - Время: {last_block.timestamp.strftime('%H:%M:%S')}\n"
-                f"   - Транзакций: {len(last_block.transactions)}\n"
+        if hasattr(self, 'consensus_info'):
+            info = (
+                f"📊 ТЕКУЩЕЕ СОСТОЯНИЕ КОНСЕНСУСА HotStuff\n\n"
+                f"👑 Текущий лидер: Узел {self.hotstuff.current_leader}\n"
+                f"🖥 Количество узлов: {len(self.hotstuff.nodes)}\n"
+                f"✅ Минимальный кворум: {((len(self.hotstuff.nodes) * 2) // 3) + 1} голосов\n"
+                f"📦 Высота цепочки: {len(self.hotstuff.blockchain)}\n"
+                f"⏳ Ожидающих блоков: {len(self.hotstuff.pending_blocks)}\n\n"
+                f"🔄 Последний блок: {len(self.hotstuff.blockchain) or 'нет'}\n"
             )
 
-        self.consensus_info.set(info)
-        self.update_block_history()
+            if self.hotstuff.blockchain:
+                last_block = self.hotstuff.blockchain[-1]
+                info += (
+                    f"   - Высота: {last_block.height}\n"
+                    f"   - Хеш: {last_block.hash[:20]}...\n"
+                    f"   - Время: {last_block.timestamp.strftime('%H:%M:%S')}\n"
+                    f"   - Транзакций: {len(last_block.transactions)}\n"
+                )
+
+            self.consensus_info.set(info)
 
     def update_block_history(self):
         """Обновляет историю блоков в визуализации"""
-        # Очистка таблицы
-        for item in self.block_history_tree.get_children():
-            self.block_history_tree.delete(item)
+        if hasattr(self, 'block_history_tree'):
+            # Очистка таблицы
+            for item in self.block_history_tree.get_children():
+                self.block_history_tree.delete(item)
 
-        # Заполнение таблицы
-        for block in reversed(self.hotstuff.blockchain):  # Отображаем в обратном порядке (новые сверху)
-            self.block_history_tree.insert("", "end", values=(
-                block.height,
-                block.hash[:20] + "..." if block.hash else "N/A",
-                len(block.transactions),
-                block.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-            ))
+            # Заполнение таблицы
+            for block in reversed(self.hotstuff.blockchain):
+                self.block_history_tree.insert("", "end", values=(
+                    block.height,
+                    block.hash[:20] + "..." if block.hash else "N/A",
+                    len(block.transactions),
+                    block.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                ))
 
     def start_consensus_animation(self):
         """Запускает анимацию процесса консенсуса"""
@@ -752,18 +747,20 @@ class DigitalRubleApp:
         self.stop_animation_button.config(state="disabled")
 
     def run_consensus_animation(self):
-        """Анимация процесса консенсуса"""
+        """Анимация процесса консенсуса с детальной записью состояний"""
         try:
+            self.clear_consensus_states()
+            self.add_consensus_state("Начало процесса анимации консенсуса HotStuff")
+            self.add_consensus_state(f"Текущий лидер: Узел {self.hotstuff.current_leader}")
+            self.add_consensus_state("----------------------------------------\n")
+
             # Симулируем несколько раундов консенсуса
             for round_num in range(1, 6):
                 if not self.consensus_animation_running:
                     break
 
-                # Обновляем информацию
-                self.visual_canvas.after(0, lambda: self.consensus_info.set(
-                    f"Раунд {round_num}: Начало процесса консенсуса\n"
-                    f"Текущий лидер: Node {self.hotstuff.current_leader}"
-                ))
+                self.add_consensus_state(f"\n=== РАУНД {round_num} ===")
+                self.add_consensus_state(f"Лидер: Узел {self.hotstuff.current_leader}")
 
                 # Анимация предложения блока
                 self.animate_proposal_phase(round_num)
@@ -775,23 +772,30 @@ class DigitalRubleApp:
                 self.animate_commit_phase(round_num)
 
                 # Ротация лидера
+                self.add_consensus_state(f"Ротация лидера: Узел {self.hotstuff.current_leader} -> ")
                 self.hotstuff.rotate_leader()
+                self.add_consensus_state(f"Узел {self.hotstuff.current_leader}")
                 self.visual_canvas.after(0, self.draw_consensus_network)
 
                 # Пауза между раундами
                 time.sleep(2)
 
+            self.add_consensus_state("\nПроцесс анимации консенсуса завершён")
+
         except Exception as e:
             logger.error(f"Ошибка в анимации консенсуса: {str(e)}")
+            self.add_consensus_state(f"ОШИБКА: {str(e)}")
         finally:
             self.consensus_animation_running = False
             self.visual_canvas.after(0, lambda: self.start_animation_button.config(state="normal"))
             self.visual_canvas.after(0, lambda: self.stop_animation_button.config(state="disabled"))
 
     def animate_proposal_phase(self, round_num: int):
-        """Анимация фазы предложения блока"""
+        """Анимация фазы предложения блока с записью состояний"""
         leader_id = self.hotstuff.current_leader
         leader_pos = self.node_positions[leader_id]
+
+        self.add_consensus_state(f"  Лидер (Узел {leader_id}) отправляет предложение блока всем узлам:")
 
         # Рисуем предложение блока
         for node_id in self.node_positions:
@@ -799,6 +803,7 @@ class DigitalRubleApp:
                 continue
 
             target_pos = self.node_positions[node_id]
+            self.add_consensus_state(f"    -> Узел {node_id}")
 
             # Анимация отправки предложения
             for i in range(5):
@@ -806,25 +811,22 @@ class DigitalRubleApp:
                     return
 
                 # Рисуем линию от лидера к узлу
-                self.visual_canvas.after(0, lambda: self.visual_canvas.create_line(
+                self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.create_line(
                     leader_pos[0], leader_pos[1],
                     target_pos[0], target_pos[1],
-                    arrow=tk.LAST, fill="#9B59B6", width=2, tags=f"proposal_{round_num}"
+                    arrow=tk.LAST, fill="#9B59B6", width=2, tags=f"proposal_{round_num}_{n}"
                 ))
 
                 time.sleep(0.2)
 
                 # Удаляем линию
-                self.visual_canvas.after(0, lambda: self.visual_canvas.delete(f"proposal_{round_num}"))
-
-        # Обновляем информацию
-        self.visual_canvas.after(0, lambda: self.consensus_info.set(
-            self.consensus_info.get() + "\nЛидер отправил предложение блока всем узлам"
-        ))
+                self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.delete(f"proposal_{round_num}_{n}"))
 
     def animate_voting_phase(self, round_num: int):
-        """Анимация фазы голосования"""
+        """Анимация фазы голосования с записью состояний"""
         leader_id = self.hotstuff.current_leader
+
+        self.add_consensus_state(f"  Узлы отправляют свои голоса лидеру (Узел {leader_id}):")
 
         # Каждый узел отправляет голос лидеру
         for node_id in self.node_positions:
@@ -833,6 +835,7 @@ class DigitalRubleApp:
 
             node_pos = self.node_positions[node_id]
             leader_pos = self.node_positions[leader_id]
+            self.add_consensus_state(f"    Узел {node_id} -> Лидер")
 
             # Анимация отправки голоса
             for i in range(3):
@@ -851,15 +854,12 @@ class DigitalRubleApp:
                 # Удаляем линию
                 self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.delete(f"vote_{round_num}_{n}"))
 
-        # Обновляем информацию
-        self.visual_canvas.after(0, lambda: self.consensus_info.set(
-            self.consensus_info.get() + "\nУзлы отправили свои голоса лидеру"
-        ))
-
     def animate_commit_phase(self, round_num: int):
-        """Анимация фазы подтверждения блока"""
+        """Анимация фазы подтверждения блока с записью состояний"""
         leader_id = self.hotstuff.current_leader
         leader_pos = self.node_positions[leader_id]
+
+        self.add_consensus_state(f"  Лидер (Узел {leader_id}) отправляет подтверждение всем узлам:")
 
         # Лидер отправляет подтверждение всем узлам
         for node_id in self.node_positions:
@@ -867,6 +867,7 @@ class DigitalRubleApp:
                 continue
 
             target_pos = self.node_positions[node_id]
+            self.add_consensus_state(f"    -> Узел {node_id}")
 
             # Анимация отправки подтверждения
             for i in range(3):
@@ -885,15 +886,8 @@ class DigitalRubleApp:
                 # Удаляем линию
                 self.visual_canvas.after(0, lambda n=node_id: self.visual_canvas.delete(f"commit_{round_num}_{n}"))
 
-        # Обновляем информацию
-        self.visual_canvas.after(0, lambda: self.consensus_info.set(
-            self.consensus_info.get() + "\nЛидер подтвердил блок и отправил подтверждение всем узлам"
-        ))
-
-        # Добавляем блок в цепочку (симуляция)
-        self.visual_canvas.after(0, lambda: self.consensus_info.set(
-            self.consensus_info.get() + f"\nБлок #{len(self.hotstuff.blockchain)+1} добавлен в цепочку!"
-        ))
+        self.add_consensus_state(f"  Блок #{len(self.hotstuff.blockchain)+1} успешно добавлен в цепочку!")
+        self.add_consensus_state("----------------------------------------")
 
     def clear_visual_canvas(self):
         """Очищает канвас визуализации"""
@@ -979,8 +973,7 @@ class DigitalRubleApp:
 
                 # Обновляем балансы пользователей
                 if transaction.sender_id in self.users:
-                    # Для онлайн-транзакций балансы уже обновлены при создании
-                    pass
+                    pass  # Балансы уже обновлены при создании транзакции
 
                 if transaction.recipient_id in self.users and self.users[transaction.recipient_id].wallet:
                     self.users[transaction.recipient_id].wallet.confirm_transaction(transaction.id, new_block.hash)
@@ -1149,10 +1142,6 @@ class DigitalRubleApp:
                 messagebox.showerror("Ошибка", "Не удалось выполнить эмиссию.")
         except ValueError:
             messagebox.showerror("Ошибка", "Некорректная сумма.")
-
-    def get_selected_bank(self):
-        """Возвращает выбранный банк"""
-        return self.banks[self.bank_combobox.get()]
 
     def create_users(self):
         """Создаёт новых пользователей"""
