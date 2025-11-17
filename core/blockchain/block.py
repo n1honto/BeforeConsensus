@@ -1,17 +1,16 @@
-# hotstuff_consensus/block.py
+# core/blockchain/block.py
 import hashlib
 import json
-from typing import Dict, Any, List
 from datetime import datetime
+from typing import List, Dict, Any
 
 class Block:
     def __init__(self, index: int, transactions: List[Dict], timestamp: float,
-                 previous_hash: str, proposer: str, nonce: int = 0):
+                 previous_hash: str, nonce: int = 0):
         self.index = index
         self.transactions = transactions
         self.timestamp = timestamp
         self.previous_hash = previous_hash
-        self.proposer = proposer
         self.nonce = nonce
 
     def compute_hash(self) -> str:
@@ -21,7 +20,6 @@ class Block:
             "transactions": self.transactions,
             "timestamp": self.timestamp,
             "previous_hash": self.previous_hash,
-            "proposer": self.proposer,
             "nonce": self.nonce
         }, sort_keys=True).encode()
         return hashlib.sha256(block_string).hexdigest()
@@ -33,7 +31,6 @@ class Block:
             "transactions": self.transactions,
             "timestamp": self.timestamp,
             "previous_hash": self.previous_hash,
-            "proposer": self.proposer,
             "nonce": self.nonce,
             "hash": self.compute_hash()
         }
@@ -46,6 +43,5 @@ class Block:
             transactions=data["transactions"],
             timestamp=data["timestamp"],
             previous_hash=data["previous_hash"],
-            proposer=data["proposer"],
             nonce=data.get("nonce", 0)
         )

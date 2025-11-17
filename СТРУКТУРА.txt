@@ -1,0 +1,55 @@
+digital_ruble_hybrid_DEMO/
+├── .git/
+├── .idea/
+├── .venv/
+├── __pycache__/
+├── api/
+│   ├── handlers/
+│   │   └── blockchain_handler.py
+│   ├── v1/
+│   │   ├── endpoints/
+│   │   │   └── blockchain.py
+│   │   └── schemas/
+│   │       └── blockchain.py
+│   └── dependencies.py
+├── core/
+│   ├── __pycache__/
+│   ├── blockchain/
+│   │   ├── __init__.py
+│   │   ├── block.py
+│   │   ├── blockchain.py
+│   │   ├── smart_contract.py
+│   │   └── transaction.py
+│   ├── __init__.py
+│   ├── central_bank.py
+│   ├── financial_organization.py
+│   ├── transaction.py
+│   ├── user.py
+│   └── wallet.py
+├── data/
+│   ├── blockchain_info.txt
+│   └── transaction_hashes.txt
+├── gui/
+│   ├── __pycache__/
+│   └── main_window.py
+├── hotstuff_consensus/
+│   ├── __pycache__/
+│   ├── __init__.py
+│   ├── block.py
+│   ├── hotstuff.py
+│   └── node.py
+├── logs/
+│   └── app.log
+├── tests/
+│   ├── test_hostuff/
+│   │   ├── __init__.py
+│   │   ├── test_block.py
+│   │   ├── test_hostsuff.py
+│   │   └── test_node.py
+│   ├── __init__.py
+│   └── test_integration.py
+├── config.py
+├── main.py
+├── requirements.txt
+├── setup.py
+└── transaction_bashes.txt

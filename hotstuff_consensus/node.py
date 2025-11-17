@@ -1,33 +1,45 @@
-from typing import Optional
-from .block import Block
+# hotstuff_consensus/node.py
+from typing import Dict, Any, Optional
+from .hotstuff import HotStuffConsensus
 
-class Node:
-    def __init__(self, node_id: int, is_leader: bool = False):
+class HotStuffNode:
+    def __init__(self, node_id: str):
         self.node_id = node_id
-        self.is_leader = is_leader
-        self.current_block: Optional[Block] = None
-        self.voted = False
+        self.consensus = HotStuffConsensus(node_id)
+        self.received_blocks: Dict[str, Dict] = {}  # block_hash: Block
 
-    def receive_proposal(self, block: Block) -> None:
-        """Получает предложение блока"""
-        self.current_block = block
-        self.voted = False
+    def receive_proposal(self, proposal: Dict) -> Dict:
+        """Получает предложение блока от лидера"""
+        self.received_blocks[proposal["block"]["hash"]] = proposal["block"]
+        return {
+            "status": "success",
+            "message": "Block proposal received",
+            "block_hash": proposal["block"]["hash"]
+        }
 
-    def vote(self, block: Block) -> bool:
-        """Голосует за блок (1 - за, 0 - против)"""
-        if self.current_block.hash != block.hash:
-            return False
+    def receive_vote(self, voter_id: str, block_hash: str) -> Dict:
+        """Получает голос от другого узла"""
+        if block_hash not in self.received_blocks:
+            return {"status": "error", "message": "Unknown block"}
 
-        if self.voted:
-            return False
+        return self.consensus.vote(block_hash, voter_id)
 
-        self.voted = True
-        return True  # Всегда голосуем "за" в этой упрощённой версии
+    def propose_block(self, block_data: Dict) -> Dict:
+        """Предлагает новый блок (если этот узел - лидер)"""
+        return self.consensus.propose(block_data)
 
-    def become_leader(self) -> None:
-        """Делает узел лидером"""
-        self.is_leader = True
+    def vote_for_block(self, block_hash: str) -> Dict:
+        """Голосует за блок"""
+        return self.consensus.vote(block_hash, self.node_id)
 
-    def become_follower(self) -> None:
-        """Делает узел последователем"""
-        self.is_leader = False
+    def new_view(self, new_view: int) -> Dict:
+        """Инициирует переход к новому виду"""
+        return self.consensus.new_view(new_view)
+
+    def get_status(self) -> Dict:
+        """Возвращает статус узла"""
+        return {
+            **self.consensus.get_status(),
+            "node_id": self.node_id,
+            "received_blocks": len(self.received_blocks)
+        }
